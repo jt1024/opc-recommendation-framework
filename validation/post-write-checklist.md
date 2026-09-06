@@ -53,6 +53,64 @@ grep -nE '第\s*[NX?]\s*梯队|#NNN|\bTODO\b|\bFIXME\b|\[行业名\]|\[用户画
 - [ ] 附录 1（评分依据）与主文档 D/R/M 值一致
 - [ ] 附录 2（相近场景）的 10 个场景编号真实存在于 OPC 主表
 
+### META-4 · 表格渲染（v3.1 新增 · 10 秒）
+
+```bash
+python -c "
+text = open('xxx.md').read()
+lines = text.split('\n')
+issues = []
+in_table = False
+for i, line in enumerate(lines, 1):
+    s = line.strip()
+    is_row = (s.startswith('|') or s.endswith('|')) and s.count('|') >= 3
+    if is_row and not in_table:
+        if i > 1 and lines[i-2].strip() != '' and not lines[i-2].strip().startswith('#') and not lines[i-2].strip().startswith('|'):
+            issues.append((i, lines[i-2].strip()[:50]))
+        in_table = True
+    elif not is_row:
+        in_table = False
+print(f'缺空行表格数: {len(issues)}')
+for n, prev in issues[:5]: print(f'  L{n}: 前一行 = {prev!r}')
+"
+```
+
+- [ ] 无表格前缺空行（Markdown 渲染器要求表格前必须有空行）
+- [ ] 所有表格行 `|` 数量一致（≥ 3 列）
+- [ ] 表头分隔行（如 `|---|---|`）存在
+
+### META-5 · ★ 段字数自洽（v3.1 新增 · 30 秒）
+
+- [ ] ★ 段字数声明使用精确措辞（"中文字符"，非"字"）
+- [ ] ★ 段子节按 强匹配→风险→路径→现金流→家庭→90天→总结 顺序排列
+- [ ] ★ 段子节标题用 ### 三级（避免被正文关键词误匹配）
+
+### META-6 · OPC 主表副本检测（v3.2 新增 · 30 秒）
+
+```bash
+python -c "
+import re
+text = open('xxx.md').read()
+chapters = re.findall(r'^##\s+([一二三四五六七八九十]+)、', text, re.MULTILINE)
+from collections import Counter
+counter = Counter(chapters)
+dups = [(k, v) for k, v in counter.items() if v >= 3]
+print(f'重复章节数: {len(dups)}')
+for k, v in dups:
+    print(f'  「{k}、」出现 {v} 次（疑似 OPC 主表副本）')
+"
+```
+
+- [ ] 无 OPC 主表副本残留（同一章节编号出现 ≤ 2 次）
+- [ ] 文档末尾无「对 38 岁南沙+300 万房贷」等 OPC 主表证据摘录段
+
+### META-7 · Sub-agent Stall 应对（v3.2 新增 · 批量优化时）
+
+- [ ] 单批并行 agent ≤ 5 个（避免资源抢占）
+- [ ] 每个 agent 设置 30-45 分钟超时熔断
+- [ ] 失败 agent 用单 agent 重试（避免再次 stall）
+- [ ] 手动 Edit 修复 ≤ 3 个文档（更可控）
+
 ---
 
 ## 📐 第三关：14 项优化逐项过（15 分钟）

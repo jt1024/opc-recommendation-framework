@@ -55,13 +55,21 @@ class ValidationReport:
         self.total_score += r.score
 
     def compute_tier(self) -> str:
-        pct = self.total_score / self.max_score * 100
+        # 动态计算实际满分（v3.1 修复：max_score 不再硬编码 100）
+        actual_max = sum(r.max_score for r in self.results) or self.max_score
+        pct = self.total_score / actual_max * 100
         if pct >= 90:
             self.tier = "PASS · 可发布"
         elif pct >= 75:
             self.tier = "NEEDS_IMPROVEMENT · 需补强"
         else:
             self.tier = "FAIL · 返工"
+        return self.tier
+
+    @property
+    def actual_max_score(self) -> int:
+        """实际满分（所有检查项 max_score 之和）"""
+        return sum(r.max_score for r in self.results) or self.max_score
         return self.tier
 
 
@@ -107,25 +115,58 @@ def check_title_version(text: str) -> CheckResult:
 
 
 def check_word_count(text: str) -> CheckResult:
-    """#2 字数必须在 17,000-22,000 中文字符范围"""
-    actual = count_chinese(text)
-    declared_match = re.search(r'总字数\*\*[：:]\s*约?\s*([\d,]+)', text)
-    declared = int(declared_match.group(1).replace(',', '')) if declared_match else None
+    """#2 字数必须在 17,000-23,000 中文字符范围
 
-    in_range = 17000 <= actual <= 22000
+    v3.1 升级：要求声明使用精确措辞（"中文字符" / "中文" / "CJK"），
+    避免 "X 字" 这种含数字/英文/标点的歧义形式。
+    """
+    actual = count_chinese(text)
+    # 匹配声明：要求至少包含"中文字符|中文|CJK|Chinese"等精确措辞
+    precise_pattern = r'总字数\*\*[：:]\s*约?\s*[\d,]+\s*(中文字符|中文\s*字符|CJK\s*字符|Chinese)'
+    precise_match = re.search(precise_pattern, text)
+    # 兼容模式：只匹配数字 + 字（但会被标记为措辞不精确）
+    loose_pattern = r'总字数\*\*[：:]\s*约?\s*([\d,]+)'
+    loose_match = re.search(loose_pattern, text)
+
+    declared = None
+    if precise_match:
+        # 提取数字
+        num_match = re.search(r'([\d,]+)', precise_match.group())
+        declared = int(num_match.group(1).replace(',', '')) if num_match else None
+    elif loose_match:
+        # 措辞不精确，标记但仍提取数字
+        declared = int(loose_match.group(1).replace(',', ''))
+
+    phrasing_ok = precise_match is not None
+    in_range = 17000 <= actual <= 23000
     declared_match_ok = declared is None or abs(declared - actual) <= 500
 
-    if in_range and declared_match_ok:
-        return CheckResult("字数声明", "META", True, 5, 5,
-                           message=f"实际 {actual:,} 字" + (f"，声明 {declared:,} 字" if declared else ""))
-
+    # 计算得分
+    score = 0
     issues = []
-    if not in_range:
-        issues.append(f"实际 {actual:,} 字超出 17,000-22,000 范围")
-    if not declared_match_ok and declared:
+    if phrasing_ok:
+        score += 2
+    else:
+        issues.append("措辞不精确（应为'中文字符'，而非'字'）")
+    if in_range:
+        score += 2
+    else:
+        issues.append(f"实际 {actual:,} 字超出 17,000-23,000 范围")
+    if declared_match_ok:
+        score += 1
+    elif declared:
         issues.append(f"声明 {declared:,} 字与实际相差 {abs(declared - actual):,}")
-    return CheckResult("字数声明", "META", False, 0, 5,
-                       "; ".join(issues), "重新统计中文字符并更新声明")
+
+    passed = score >= 5
+    if passed:
+        return CheckResult(
+            "字数声明", "META", True, 5, 5,
+            message=f"实际 {actual:,} 中文字符" + (f"，声明 {declared:,}" if declared else "")
+        )
+    return CheckResult(
+        "字数声明", "META", False, score, 5,
+        "; ".join(issues), "改用'X 中文字符（含表格与代码块）'格式声明"
+    )
 
 
 # ============================================================
@@ -155,13 +196,14 @@ def check_chapter_sequence(text: str) -> CheckResult:
 
 
 def check_ch13_order(text: str) -> CheckResult:
-    """#4 第十三章 13.5→13.9 子节顺序必须为：家庭会议 / 行动 / 独特 / 紧迫 / 本地"""
+    """#4 第十三章 13.5→13.9 子节顺序（v3.2 接受多套措辞）"""
+    # v3.2 升级：每个子节接受多个关键词（避免措辞差异导致误报）
     expected_order = [
-        ('13.5', '家庭决策会议'),
-        ('13.6', '第一步行动'),
-        ('13.7', '给你独特建议'),
-        ('13.8', '紧迫提醒'),
-        ('13.9', '南沙|本地|目标客户|本范本'),  # 本地名可能不同（南沙/广州/北京等）
+        ('13.5', r'家庭决策会议|家庭会议|家庭'),
+        ('13.6', r'第一步行动|行动清单|90\s*天行动|90天行动'),
+        ('13.7', r'给你独特建议|独特建议|差异化|差异化卖点|护城河'),
+        ('13.8', r'紧迫提醒|三个紧迫|紧迫|紧迫性'),
+        ('13.9', r'南沙|本地|目标客户|本范本|客户范本'),  # 本地名可能不同
     ]
 
     # 找到第十三章的范围
@@ -175,9 +217,9 @@ def check_ch13_order(text: str) -> CheckResult:
 
     positions = []
     for num, keyword in expected_order:
-        # 找到子节标题位置（用非捕获组包裹 keyword 防止 | 被解析为正则 OR）
-        keyword_group = '(?:' + keyword + ')'
-        pat = rf'###\s+[\S\s]{{0,40}}{re.escape(num)}[\S\s]{{0,100}}{keyword_group}'
+        # v3.2 升级：keyword 是 regex（已含 | 或其他元字符），直接编译不再 re.escape
+        # 必须以 ### 13.X 开头（避免误匹配正文中的关键词）
+        pat = rf'###\s+{re.escape(num)}[\S\s]{{0,100}}{keyword}'
         match = re.search(pat, ch13)
         if match:
             positions.append((num, match.start()))
@@ -198,15 +240,47 @@ def check_ch13_order(text: str) -> CheckResult:
                        "重排为 13.5 家庭会议 → 13.6 行动 → 13.7 独特 → 13.8 紧迫 → 13.9 本地")
 
 
+def check_no_opc_table_duplicate(text: str) -> CheckResult:
+    """v3.2 新增：检查 OPC 主表副本残留
+    常见问题：agent 在优化过程中误把 OPC 主表内容（一~十二章 + 完整 13.5-13.9）重复粘贴到 OPC 推荐文档末尾
+    检测策略：相同章节编号出现 ≥ 3 次才算重复（如「## 一、」出现 3 次）；相似度阈值 0.92
+    """
+    # 找出所有"## 一、"或"## 二、"开头位置（章节一级标题），并按编号分组
+    chapter_positions = {}  # {'一': [pos1, pos2, ...], '二': [...]}
+    for m in re.finditer(r'^##\s+([一二三四五六七八九十]+)、', text, re.MULTILINE):
+        num = m.group(1)
+        chapter_positions.setdefault(num, []).append(m.start())
+
+    # 找出编号出现 ≥ 3 次的章节（一/二/三/四 等正常章节通常只出现 1-2 次）
+    duplicates = []
+    for num, positions in chapter_positions.items():
+        if len(positions) >= 3:
+            # 比较这些重复位置的内容相似度
+            chunks = [text[p:p + 200] for p in positions]
+            from difflib import SequenceMatcher
+            for i in range(1, len(chunks)):
+                sim = SequenceMatcher(None, chunks[0][:100], chunks[i][:100]).ratio()
+                if sim > 0.92:
+                    duplicates.append((num, len(positions), round(sim, 2)))
+
+    if duplicates:
+        return CheckResult("OPC 主表副本", "STRUCT", False, 0, 5,
+                           f"检测到 OPC 主表副本残留：章节 {duplicates[0][0]} 出现 {duplicates[0][1]} 次（相似度 {duplicates[0][2]}）",
+                           "删除重复的 OPC 主表副本（一~十二章 + 13.5-13.9 重复段，如「对 38 岁南沙+300 万房贷」）")
+    return CheckResult("OPC 主表副本", "STRUCT", True, 5, 5)
+
+
 # ============================================================
 # P0 · 5 项核心优化（60 分）
 # ============================================================
 
 def check_p0_1_reader_filter(text: str) -> CheckResult:
-    """P0-1 读者筛选 ✅/⚠️/❌ 三档"""
-    has_strong = bool(re.search(r'✅\s*强烈适合', text))
-    has_partial = bool(re.search(r'⚠️\s*部分适合', text))
-    has_no = bool(re.search(r'❌\s*不适合', text))
+    """P0-1 读者筛选 ✅/⚠️/❌ 三档（v3.2 兼容 Markdown 加粗写法）"""
+    # v3.2 升级：接受 ✅/⚠️/❌ 后接 ** 加粗（兼容多种写法）
+    # 匹配模式：✅ [可选 **] 强烈适合 [可选 你/你：
+    has_strong = bool(re.search(r'✅\s*\**\s*强烈适合', text))
+    has_partial = bool(re.search(r'⚠️\s*\**\s*部分适合', text))
+    has_no = bool(re.search(r'❌\s*\**\s*不适合', text))
     if has_strong and has_partial and has_no:
         return CheckResult("P0-1 读者筛选", "P0", True, 12, 12)
     missing = []
@@ -215,7 +289,7 @@ def check_p0_1_reader_filter(text: str) -> CheckResult:
     if not has_no: missing.append("❌ 不适合")
     return CheckResult("P0-1 读者筛选", "P0", False, 0, 12,
                        f"缺失：{missing}",
-                       "引言开头加 ✅/⚠️/❌ 三档读者筛选")
+                       "引言开头加 ✅/⚠️/❌ 三档读者筛选（兼容 ✅ **强烈适合** 加粗写法）")
 
 
 def check_p0_2_number_distribution(text: str) -> CheckResult:
@@ -286,7 +360,7 @@ def check_p0_4_four_scenarios(text: str) -> CheckResult:
     has_4_scenarios = bool(re.search(r'方案\s*[ABCD]', text)) or \
                       bool(re.search(r'[ABCD][、. ]\s*(兼职|周末|全职|合伙|轻|中|高)', text))
     has_worst_case = bool(re.search(r'最坏情况|最坏兜底|连续\s*6\s*月\s*0\s*收入|启动期.*0\s*收入', text))
-    has_emergency = bool(re.search(r'退路\s*[ABC]', text)) or \
+    has_emergency = bool(re.search(r'退路\s*[A-D]|[1-4]\b', text)) or \
                     bool(re.search(r'副业组合|外包过渡|退回职场', text))
 
     score = 0
@@ -591,6 +665,167 @@ def check_anti_patterns(text: str) -> CheckResult:
 
 
 # ============================================================
+# 表格格式检测（v3.1 升级 · 001 实战反馈）
+# ============================================================
+
+def check_table_blank_line(text: str) -> CheckResult:
+    """Markdown 表格前必须有空行（避免 '|...|' 被识别为段落文本而不渲染）
+
+    扫描所有 |...| 开头的表格行（| 数量 ≥3），若前一行非空且非标题行 → 报警。
+    """
+    lines = text.split('\n')
+    issues = []  # (行号, 前一行内容)
+    in_table = False
+
+    for i, line in enumerate(lines, 1):
+        stripped = line.strip()
+        # 判断是否为表格行：以 | 开头/结尾 且 至少 3 个 |
+        is_table_row = (
+            (stripped.startswith('|') or stripped.endswith('|'))
+            and stripped.count('|') >= 3
+        )
+
+        if is_table_row and not in_table:
+            # 表格第一行 → 检查前一行
+            if i > 1:
+                prev = lines[i - 2].strip()
+                if prev != '' and not prev.startswith('#') and not prev.startswith('|'):
+                    issues.append((i, prev[:50]))
+            in_table = True
+        elif not is_table_row and in_table:
+            in_table = False
+
+    if issues:
+        line_nums = ', '.join(f'L{n}' for n, _ in issues[:5])
+        return CheckResult(
+            "表格前空行", "STRUCT", False, 0, 5,
+            f"发现 {len(issues)} 个表格前缺空行（{line_nums}）",
+            "在每个 |...| 表格前加一行空行"
+        )
+    return CheckResult("表格前空行", "STRUCT", True, 5, 5, "所有表格前均有空行")
+
+
+# ============================================================
+# ★ 段字数自洽（v3.1 升级 · 001 实战反馈）
+# ============================================================
+
+def check_star_section_count(text: str) -> CheckResult:
+    """★ 段字数声明 vs 实际偏差 ≤ 100 字
+
+    ★ 段独立声明"约 X 字"时，必须与实际中文字数一致（偏差 ≤ 100）。
+    """
+    star_match = re.search(r'## ★ 对.*?(?=\n## |\Z)', text, re.DOTALL)
+    if not star_match:
+        return CheckResult(
+            "★ 段字数自洽", "META", False, 0, 3,
+            "未找到 ★ 段（'## ★ 对' 开头）",
+            "★ 段是 OPC 文档决策核心，必含"
+        )
+
+    star_section = star_match.group()
+    actual = count_chinese(star_section)
+
+    # 在 ★ 段内查找字数声明（"约 X 字" / "X 字"）
+    declared_match = re.search(r'约?\s*([\d,]+)\s*字', star_section)
+    declared = int(declared_match.group(1).replace(',', '')) if declared_match else None
+
+    if declared is None:
+        return CheckResult(
+            "★ 段字数自洽", "META", True, 3, 3,
+            f"★ 段 {actual:,} 字（未声明具体字数）"
+        )
+
+    diff = abs(declared - actual)
+    if diff <= 100:
+        return CheckResult(
+            "★ 段字数自洽", "META", True, 3, 3,
+            f"★ 段 {actual:,} 字，声明 {declared:,} 字（偏差 {diff}）"
+        )
+
+    return CheckResult(
+        "★ 段字数自洽", "META", False, 0, 3,
+        f"★ 段实际 {actual:,} 字，声明 {declared:,} 字，偏差 {diff}",
+        "★ 段字数与实际偏差 > 100，重新统计并更新声明"
+    )
+
+
+# ============================================================
+# ★ 段子节顺序（v3.1 升级 · 避免 043 文档 13.5/13.6 错位问题）
+# ============================================================
+
+def check_star_section_order(text: str) -> CheckResult:
+    """★ 段子节顺序校验（强匹配 → 风险点 → 推荐路径 → ... → 一句话总结）
+
+    v3.1 修复：只匹配 ### 三级标题中的关键词（避免正文中提到"现金流""风险"等
+    关键字造成误报）。
+    """
+    star_match = re.search(r'## ★ 对.*?(?=\n## |\Z)', text, re.DOTALL)
+    if not star_match:
+        return CheckResult(
+            "★ 段子节顺序", "STRUCT", False, 0, 5,
+            "未找到 ★ 段，跳过顺序校验",
+            "★ 段是 OPC 文档核心，必含"
+        )
+
+    star_section = star_match.group()
+
+    # 提取所有 ### 三级标题（带位置）
+    heading_pattern = re.compile(r'^###\s+([^\n]+)', re.MULTILINE)
+    headings = [(m.start(), m.group(1)) for m in heading_pattern.finditer(star_section)]
+
+    # 子节关键词映射（每个子节匹配 1 个标题）
+    expected_keywords = [
+        (r'强匹配', 1, '强匹配项'),
+        (r'风险', 2, '风险点'),
+        (r'推荐路径', 3, '推荐路径'),
+        (r'现金流', 4, '现金流规划'),
+        (r'家庭决策|家庭共识|配偶', 5, '家庭决策会议'),
+        (r'90\s*天|第一步行动', 6, '90 天清单'),
+        (r'一句话总结', 7, '一句话总结'),
+    ]
+
+    positions = []  # [(order, position, name)]
+    for kw_pattern, order, name in expected_keywords:
+        for pos, heading_text in headings:
+            if re.search(kw_pattern, heading_text):
+                positions.append((order, pos, name))
+                break  # 只取第一次出现
+
+    if len(positions) < 4:
+        return CheckResult(
+            "★ 段子节顺序", "STRUCT", False, 0, 5,
+            f"★ 段只检测到 {len(positions)}/{len(expected_keywords)} 个核心子节",
+            "★ 段需含 强匹配 / 风险 / 路径 / 现金流 / 家庭 / 90天 / 总结"
+        )
+
+    # 检查顺序是否单调递增
+    positions.sort(key=lambda x: x[1])
+    orders_in_order = [p[0] for p in positions]
+
+    is_sorted = all(orders_in_order[i] <= orders_in_order[i + 1] for i in range(len(orders_in_order) - 1))
+
+    if is_sorted:
+        return CheckResult(
+            "★ 段子节顺序", "STRUCT", True, 5, 5,
+            f"★ 段子节顺序正确（{len(positions)}/{len(expected_keywords)} 个核心子节）"
+        )
+
+    # 找出顺序错位的子节
+    disordered = []
+    for i in range(len(orders_in_order) - 1):
+        if orders_in_order[i] > orders_in_order[i + 1]:
+            disordered.append(
+                f"{expected_keywords[orders_in_order[i]-1][2]} 早于 {expected_keywords[orders_in_order[i+1]-1][2]}"
+            )
+
+    return CheckResult(
+        "★ 段子节顺序", "STRUCT", False, 0, 5,
+        f"★ 段子节顺序错位：{'; '.join(disordered[:3])}",
+        "★ 段子节应按 强匹配→风险→路径→现金流→家庭→90天→总结 顺序排列"
+    )
+
+
+# ============================================================
 # 主入口
 # ============================================================
 
@@ -606,6 +841,7 @@ def validate_file(filepath: Path) -> ValidationReport:
     # STRUCT（20 分）
     report.add(check_chapter_sequence(text))
     report.add(check_ch13_order(text))
+    report.add(check_no_opc_table_duplicate(text))  # v3.2 新增
 
     # P0（60 分）
     report.add(check_p0_1_reader_filter(text))
@@ -629,6 +865,11 @@ def validate_file(filepath: Path) -> ValidationReport:
 
     # 反模式（仅警告，不计分）
     report.add(check_anti_patterns(text))
+
+    # v3.1 新增：表格格式 + ★ 段自洽 + ★ 段子节顺序
+    report.add(check_table_blank_line(text))
+    report.add(check_star_section_count(text))
+    report.add(check_star_section_order(text))
 
     report.compute_tier()
     return report
@@ -668,8 +909,9 @@ def print_report(report: ValidationReport, verbose: bool = True):
                 print(f"     💡 {r.fix_hint}")
 
     print("\n" + "=" * 70)
-    pct = report.total_score / report.max_score * 100
-    print(f"📊 总分: {report.total_score:.2f} / {report.max_score} ({pct:.0f}%)")
+    actual_max = report.actual_max_score
+    pct = report.total_score / actual_max * 100
+    print(f"📊 总分: {report.total_score:.2f} / {actual_max} ({pct:.0f}%)")
     print(f"🎯 评级: {report.tier}")
     print("=" * 70)
 
