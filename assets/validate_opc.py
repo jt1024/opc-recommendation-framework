@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """
-validate_opc.py · OPC 文档质量校验脚本（v3.0 · 043 质量基线版）
+validate_opc.py · OPC 文档质量校验脚本（v3.2 · 043 质量基线版）
 
 用法：
     python validate_opc.py <path-to-markdown-file>
     python validate_opc.py --batch <directory>
 
-校验维度（14 项质量优化 + 20 章节结构）：
+校验维度（23 项检查 · 实际满分 148 分，非 100 分）：
+    META × 2 + STRUCT × 3 + P0 × 5 + P1 × 5 + P2 × 4
+    + 反模式 × 1 + 表格渲染 × 1 + ★ 段字数自洽 × 1 + ★ 段子节顺序 × 1
     P0（5 项 × 12 分）：读者筛选 / 数字分布 / 本地客户 / 4 方案现金流 / 失败案例
     P1（5 项 × 5 分）：客户原话 / 工具日记 / 法律合规 / 家庭会议 / 评分依据
     P2（4 项 × 3.75 分）：90 天清单 / 引用源分组 / ASCII 信息图 / 相近场景跳转
 
 退出码：
-    0 = PASS（≥ 90 分）
-    1 = FAIL（< 75 分）
-    2 = NEEDS IMPROVEMENT（75-89 分）
+    0 = PASS（得分率 ≥ 90%，148 分制约 133 分）
+    2 = NEEDS IMPROVEMENT（75-89%）
+    1 = FAIL（< 75%）
+注：评级按「得分 / 实际满分」的百分比判定，不是绝对值 90 分。
 """
 
 import re
@@ -100,18 +103,23 @@ def section_exists(text: str, pattern: str) -> bool:
 # META · 元信息校验（10 分）
 # ============================================================
 
+# v3.2 修订：框架已演进到 v3.2，标题版本号接受 v3.0 / v3.1 / v3.2。
+# 原实现硬判 "v3.0"，导致按当前版本标注的文档被误扣 5 分。
+TITLE_VERSION_RE = re.compile(r'v3\.[012]')
+
+
 def check_title_version(text: str) -> CheckResult:
-    """#1 标题必须含 v3.0 · 043 质量基线版"""
+    """#1 标题必须含 v3.0 / v3.1 / v3.2 + 043 质量基线版"""
     title_match = re.search(r'^# .+', text, re.MULTILINE)
     if not title_match:
         return CheckResult("标题版本号", "META", False, 0, 5,
                            "未找到一级标题", "首行应为 # 标题（v3.0 · 043 质量基线版）")
     title = title_match.group(0)
-    if "v3.0" in title and "043" in title and "质量基线" in title:
+    if TITLE_VERSION_RE.search(title) and "043" in title and "质量基线" in title:
         return CheckResult("标题版本号", "META", True, 5, 5)
     return CheckResult("标题版本号", "META", False, 0, 5,
-                       f"标题不符合 v3.0 格式：{title}",
-                       "改为 # 标题（v3.0 · 043 质量基线版）")
+                       f"标题不符合 v3.x 格式：{title}",
+                       "改为 # 标题（v3.0 · 043 质量基线版）；v3.0 / v3.1 / v3.2 均通过")
 
 
 def check_word_count(text: str) -> CheckResult:
