@@ -227,7 +227,10 @@ def check_ch13_order(text: str) -> CheckResult:
     for num, keyword in expected_order:
         # v3.2 升级：keyword 是 regex（已含 | 或其他元字符），直接编译不再 re.escape
         # 必须以 ### 13.X 开头（避免误匹配正文中的关键词）
-        pat = rf'###\s+{re.escape(num)}[\S\s]{{0,100}}{keyword}'
+        # v3.2.1 修复：keyword 必须包在 (?:...) 非捕获组里，避免 alternation 优先级导致误匹配
+        # 例如家庭决策会议|家庭会议|家庭 之前会等价于 (...家庭决策会议)|(家庭会议)|(家庭)
+        # 导致"家庭"在任何位置都能匹配
+        pat = rf'###\s+{re.escape(num)}[\S\s]{{0,100}}(?:{keyword})'
         match = re.search(pat, ch13)
         if match:
             positions.append((num, match.start()))
