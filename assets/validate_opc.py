@@ -127,10 +127,12 @@ def check_word_count(text: str) -> CheckResult:
 
     v3.1 升级：要求声明使用精确措辞（"中文字符" / "中文" / "CJK"），
     避免 "X 字" 这种含数字/英文/标点的歧义形式。
+    v3.3 升级：regex 兼容 `中文字符（含表格与代码块）` 后置格式，避免星号吞字符。
     """
     actual = count_chinese(text)
     # 匹配声明：要求至少包含"中文字符|中文|CJK|Chinese"等精确措辞
-    precise_pattern = r'总字数\*\*[：:]\s*约?\s*[\d,]+\s*(中文字符|中文\s*字符|CJK\s*字符|Chinese)'
+    # v3.3 升级：用更稳健的 regex：(?:含表格与代码块)? 在中文字符之后允许空缺或附加
+    precise_pattern = r'总字数\*\*\s*[：:]\s*约?\s*[\d,]+\s*(?:中文字符|中文\s*字符|CJK\s*字符|Chinese)(?:\s*[（(][^)）]*[)）])?'
     precise_match = re.search(precise_pattern, text)
     # 兼容模式：只匹配数字 + 字（但会被标记为措辞不精确）
     loose_pattern = r'总字数\*\*[：:]\s*约?\s*([\d,]+)'
@@ -230,7 +232,9 @@ def check_ch13_order(text: str) -> CheckResult:
         # v3.2.1 修复：keyword 必须包在 (?:...) 非捕获组里，避免 alternation 优先级导致误匹配
         # 例如家庭决策会议|家庭会议|家庭 之前会等价于 (...家庭决策会议)|(家庭会议)|(家庭)
         # 导致"家庭"在任何位置都能匹配
-        pat = rf'###\s+{re.escape(num)}[\S\s]{{0,100}}(?:{keyword})'
+        # v3.3 升级：emoji 前缀兼容。允许 ### 后跟 emoji + 空白 + 13.X
+        # 用 [^\d\s] 替代复杂 emoji range（兼容复合 emoji 如 👨‍👩‍👧）
+        pat = rf'###\s+(?:[^\d\s][^\s]*\s*)?{re.escape(num)}[\S\s]{{0,100}}(?:{keyword})'
         match = re.search(pat, ch13)
         if match:
             positions.append((num, match.start()))
@@ -781,7 +785,9 @@ def check_star_section_order(text: str) -> CheckResult:
     star_section = star_match.group()
 
     # 提取所有 ### 三级标题（带位置）
-    heading_pattern = re.compile(r'^###\s+([^\n]+)', re.MULTILINE)
+    # v3.3 升级：兼容 emoji 前缀（### 💡 一句话总结）
+    # 用 [^\d\s] 替代复杂 emoji range（兼容复合 emoji 如 👨‍👩‍👧）
+    heading_pattern = re.compile(r'^###\s+(?:[^\d\s][^\s]*\s*)?([^\n]+)', re.MULTILINE)
     headings = [(m.start(), m.group(1)) for m in heading_pattern.finditer(star_section)]
 
     # 子节关键词映射（每个子节匹配 1 个标题）
