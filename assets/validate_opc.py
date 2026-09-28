@@ -964,6 +964,10 @@ def main():
     parser.add_argument('--threshold', type=float, default=90.0,
                         help='PASS 阈值百分比（默认 90.0，CI 可调高至 95）')
     parser.add_argument('--json', action='store_true', help='输出 JSON 格式汇总（CI 友好）')
+    parser.add_argument('--exclude', metavar='PATTERN', action='append', default=[],
+                        help='排除文件名匹配正则的文件（可多次指定，v3.5 新增）')
+    parser.add_argument('--only', metavar='PATTERN', action='append', default=[],
+                        help='仅校验文件名匹配正则的文件（与 --exclude 互斥，v3.5 新增）')
 
     args = parser.parse_args()
 
@@ -983,7 +987,33 @@ def main():
         if not d.is_dir():
             print(f"❌ 目录不存在: {d}", file=sys.stderr)
             sys.exit(1)
-        files.extend(d.glob('**/*.md'))
+        all_md = list(d.glob('**/*.md'))
+
+        # v3.5 --exclude / --only 过滤
+        excluded = []
+        if args.only and args.exclude:
+            print("❌ --only 与 --exclude 互斥，请只用一个", file=sys.stderr)
+            sys.exit(1)
+        if args.only:
+            files = [f for f in all_md if any(re.search(p, f.name) for p in args.only)]
+            if not files:
+                print(f"❌ --only 模式未匹配任何文件（{args.only}）", file=sys.stderr)
+                sys.exit(1)
+        elif args.exclude:
+            files = []
+            for f in all_md:
+                if any(re.search(p, f.name) for p in args.exclude):
+                    excluded.append(f)
+                else:
+                    files.append(f)
+        else:
+            files = all_md
+
+        if excluded and not args.json:
+            print(f"⏭️  已排除 {len(excluded)} 份文件（匹配 --exclude 模式）:")
+            for f in excluded:
+                print(f"   - {f.name}")
+            print()
 
     if not files:
         print("未找到任何 .md 文件", file=sys.stderr)
