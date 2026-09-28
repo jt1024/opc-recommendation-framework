@@ -22,7 +22,16 @@ validate_opc.py · OPC 文档质量校验脚本（v3.2 · 043 质量基线版）
 
 import re
 import sys
+import io
 import argparse
+
+# 强制 UTF-8 输出（Windows CI 环境兼容）
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except Exception:
+        pass  # 非 buffer 模式（如 pytest capture）跳过
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
@@ -103,9 +112,9 @@ def section_exists(text: str, pattern: str) -> bool:
 # META · 元信息校验（10 分）
 # ============================================================
 
-# v3.2 修订：框架已演进到 v3.2，标题版本号接受 v3.0 / v3.1 / v3.2。
-# 原实现硬判 "v3.0"，导致按当前版本标注的文档被误扣 5 分。
-TITLE_VERSION_RE = re.compile(r'v3\.[012]')
+# v3.3 修订：框架已演进到 v3.3，标题版本号接受 v3.0 / v3.1 / v3.2 / v3.3。
+# 原实现硬判 "v3.0" / "v3.[012]"，导致按 v3.3 标注的文档被误扣 5 分。
+TITLE_VERSION_RE = re.compile(r'v3\.[0123]')
 
 
 def check_title_version(text: str) -> CheckResult:
@@ -951,6 +960,10 @@ def main():
     parser.add_argument('path', nargs='?', help='单个 .md 文件路径')
     parser.add_argument('--batch', metavar='DIR', help='批量校验目录下所有 .md 文件')
     parser.add_argument('--quiet', action='store_true', help='仅输出汇总，不显示详细报告')
+    parser.add_argument('--strict', action='store_true', help='严格模式：NEEDS_IMPROVEMENT 也视为 FAIL（CI 推荐）')
+    parser.add_argument('--threshold', type=float, default=90.0,
+                        help='PASS 阈值百分比（默认 90.0，CI 可调高至 95）')
+    parser.add_argument('--json', action='store_true', help='输出 JSON 格式汇总（CI 友好）')
 
     args = parser.parse_args()
 
@@ -978,32 +991,60 @@ def main():
 
     # 批量模式：只输出汇总
     if args.batch:
-        print(f"📁 批量校验: {len(files)} 个文件\n")
+        if not args.json:
+            print(f"📁 批量校验: {len(files)} 个文件\n")
         summary = []
         for f in files:
             try:
                 report = validate_file(f)
                 summary.append((f, report))
-                if not args.quiet:
+                if not args.quiet and not args.json:
                     print_report(report)
                     print()
             except Exception as e:
                 print(f"❌ {f}: 解析失败 - {e}", file=sys.stderr)
 
-        # 汇总表
-        print("\n" + "=" * 70)
-        print("📊 批量汇总")
-        print("=" * 70)
-        print(f"{'文件':<60} {'分数':>8} {'评级':<20}")
-        print("-" * 70)
-        for f, r in summary:
-            pct = r.total_score / r.max_score * 100
-            print(f"{f.name:<60} {pct:>6.0f}%  {r.tier:<20}")
+        # 汇总表（非 JSON 模式）
+        if not args.json:
+            print("\n" + "=" * 70)
+            print("📊 批量汇总")
+            print("=" * 70)
+            print(f"{'文件':<60} {'分数':>8} {'评级':<20}")
+            print("-" * 70)
+            for f, r in summary:
+                pct = r.total_score / r.actual_max_score * 100
+                print(f"{f.name:<60} {pct:>6.0f}%  {r.tier:<20}")
+            print("=" * 70)
 
-        # 退出码
+        # 退出码（支持 --strict / --threshold / --json）
         any_fail = any(r.tier.startswith("FAIL") for _, r in summary)
         any_warn = any(r.tier.startswith("NEEDS") for _, r in summary)
-        if any_fail:
+        below_threshold = any(
+            (r.total_score / r.actual_max_score * 100) < args.threshold
+            for _, r in summary
+        )
+
+        if args.json:
+            import json as _json
+            payload = {
+                "total": len(summary),
+                "pass": sum(1 for _, r in summary if r.tier.startswith("PASS")),
+                "needs_improvement": sum(1 for _, r in summary if r.tier.startswith("NEEDS")),
+                "fail": sum(1 for _, r in summary if r.tier.startswith("FAIL")),
+                "threshold_pct": args.threshold,
+                "strict": args.strict,
+                "files": [
+                    {
+                        "name": f.name,
+                        "tier": r.tier,
+                        "score_pct": round(r.total_score / r.actual_max_score * 100, 2),
+                    }
+                    for f, r in summary
+                ],
+            }
+            print(_json.dumps(payload, ensure_ascii=False, indent=2))
+
+        if any_fail or (args.strict and any_warn) or below_threshold:
             sys.exit(1)
         elif any_warn:
             sys.exit(2)

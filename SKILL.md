@@ -43,8 +43,9 @@ metadata:
 >
 > | 文件 | 版本 | 说明 |
 > |---|---|---|
-> | `assets/validate_opc.py` | **v3.2** | 实际生效的判定逻辑，**23 项检查 · 实际满分 148 分**（不是 100 分）|
-> | `SKILL.md`（本文件）| v3.0 底子 + v3.2 章节 | 正文多数处仍写 v3.0，以末尾「v3.2 升级项」为准 |
+> | `assets/validate_opc.py` | **v3.4** | 实际生效的判定逻辑，**23 项检查 · 实际满分 148 分**（不是 100 分）· **v3.4 新增 `--json`/`--strict`/`--threshold` 三档 CI 友好 flag** |
+> | `SKILL.md`（本文件）| v3.0 底子 + v3.4 章节 | 正文多数处仍写 v3.0，以末尾「v3.4 升级项」为准 |
+> | `references/ci-cd-integration.md` | **v3.4 新增** | GitHub Actions CI/CD 集成指南（OPC 365 实战 YAML 模板） |
 > | `README.md` | v3.1 → 已校正 | 原「18 项 / 100 分 / 22,000 字」声明已过期，已按脚本实际实现修正 |
 > | `assets/template-skeleton.md`、`references/*` | v3.0 | 骨架模板未同步 v3.1/v3.2 新增项 |
 >
@@ -553,11 +554,12 @@ OPC 综合分 = D + R + 2M
 - `citation-sources.md` - 顶级咨询公司报告库
 - `template-checklist.md` - **v3.0 验收清单（14 项优化 + 20 章节）**
 - `forbidden-patterns.md` - **🆕 v3.0 禁止模式库（14 条红线 + 检测正则 + 修复示例）**
+- `ci-cd-integration.md` - **🆕 v3.4 升级项 · GitHub Actions CI/CD 集成指南（含 OPC 365 实战 YAML 模板）**
 
 ### assets/
 - `template-skeleton.md` - **v3.0 完整 20 章节空白模板（带 14 项优化填空位）**
 - `scoring-matrix-template.md` - 加权评分矩阵 + **D+R+2M 模型实例**
-- `validate_opc.py` - **🆕 自动化校验脚本（14 项优化 + 20 章节 + D+R+2M · 单文件 + 批量模式）**
+- `validate_opc.py` - **🆕 自动化校验脚本（14 项优化 + 20 章节 + D+R+2M · 单文件 + 批量模式 + `--json`/`--strict`/`--threshold` 三档 CI 友好 flag）**
 
 ### validation/ 🆕
 - `pre-write-checklist.md` - **写作前自检清单（8 关 · 30 分钟）**
